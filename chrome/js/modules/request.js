@@ -1694,6 +1694,7 @@ pm.request = {
         var rows, count, j;
         var row, key, value;
 
+        // build the curl command here...don't forget to close the xhr or cancel the request
         if (this.isMethodWithBody(method)) {
             if (this.dataMode === 'raw') {
                 data = envManager.processString(data, envValues);

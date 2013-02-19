@@ -133,7 +133,7 @@ pm.layout = {
                 pm.collections.getAllCollections();
             }
         });
-
+        
         $("#submit-request").on("click", function () {
             pm.request.send("text");
         });
@@ -331,6 +331,15 @@ pm.layout = {
         });
 
         $("#modal-delete-collection").on("hidden", function () {
+            pm.layout.onModalClose();
+        });
+        
+        $("#modal-curl").on("shown", function () {
+            //$('.environments-actions-add').focus();
+            pm.layout.onModalOpen("#modal-curl");
+        });
+
+        $("#modal-curl").on("hidden", function () {
             pm.layout.onModalClose();
         });
 
