@@ -138,6 +138,11 @@ pm.layout = {
             pm.request.send("text");
         });
 
+        $("#give-curl-command").on("click", function() {
+            var curlCommand = pm.request.send("text", true);
+            $('#curl-translation').text(curlCommand);
+        });
+
         $("#update-request-in-collection").on("click", function () {
             pm.collections.updateCollectionFromCurrentRequest();
         });
