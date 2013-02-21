@@ -1615,9 +1615,25 @@ pm.request = {
 
         return headers;
     },
+    
+    extractCurlCommand:function (method, url, headersMap, formData) {
+        
+        var curlCommand = "curl -X " + method;
+
+        for (var headerKey in headersMap) {
+            curlCommand += ' -H "' + headerKey + ":" + headersMap[headerKey]  + '"';
+        }
+        
+        if (formData) {
+            curlCommand += ' -d "' + formData + '"';
+        }
+        
+        curlCommand += ' ' + url;
+        return curlCommand;
+    },
 
     //Send the current request
-    send:function (responseType) {
+    send:function (responseType, curlCommand) {
         // Set state as if change event of input handlers was called
         pm.request.setUrlParamString(pm.request.getUrlEditorParams());
         pm.request.headers = pm.request.getHeaderEditorParams();
@@ -1656,12 +1672,11 @@ pm.request = {
 
         url = pm.request.encodeUrl(url);
 
+        var that = this;
         var originalUrl = $('#url').val();
         var method = this.method.toUpperCase();
         var data = pm.request.body.getRawData();
         var originalData = data;
-        var finalBodyData;
-        var headers = this.headers;
 
         if (pm.settings.get("usePostmanProxy") == true) {
             headers = pm.request.prepareHeadersForProxy(headers);
@@ -1679,92 +1694,122 @@ pm.request = {
 
         xhr.responseType = responseType;
         xhr.open(method, url, true);
-
-        for (i = 0; i < headers.length; i++) {
-            var header = headers[i];
-            if (!_.isEmpty(header.value)) {
-                xhr.setRequestHeader(header.name, envManager.processString(header.value, envValues));
+        
+        function generateHeaders() {
+            
+            var headersMap = [];
+            var headers = that.headers;
+            
+            for (i = 0; i < headers.length; i++) {
+                var header = headers[i];
+                if (!_.isEmpty(header.value)) {
+                    headersMap[header.name] = envManager.processString(header.value, envValues);
+                }
             }
+
+            if(pm.settings.get("sendNoCacheHeader") === true) {
+                headersMap["Cache-Control"] = "no-cache";
+            }
+
+            if (that.dataMode === 'urlencoded') {
+                headersMap["Content-Type"] = "application/x-www-form-urlencoded";
+            }
+            
+            return headersMap;
         }
 
-        if(pm.settings.get("sendNoCacheHeader") === true) {
-            xhr.setRequestHeader("Cache-Control", "no-cache");                
-        }
+        function getFinalBodyData () {
+            
+            var finalBodyData;
+            var rows, count, j;
+            var row, key, value;
+            
+            if (that.isMethodWithBody(method)) {
+                if (that.dataMode === 'raw') {
+                    return envManager.processString(data, envValues);
+                }
+                else if (that.dataMode === 'params') {
+                    finalBodyData = new FormData();
 
-        var rows, count, j;
-        var row, key, value;
+                    rows = $('#formdata-keyvaleditor').keyvalueeditor('getElements');
 
-        // build the curl command here...don't forget to close the xhr or cancel the request
-        if (this.isMethodWithBody(method)) {
-            if (this.dataMode === 'raw') {
-                data = envManager.processString(data, envValues);
-                finalBodyData = data;
-                xhr.send(finalBodyData);
-            }
-            else if (this.dataMode === 'params') {
-                finalBodyData = new FormData();
+                    count = rows.length;
 
-                rows = $('#formdata-keyvaleditor').keyvalueeditor('getElements');
+                    for (j = 0; j < count; j++) {
+                        row = rows[j];
+                        key = row.keyElement.val();
+                        var valueType = row.valueType;
+                        var valueElement = row.valueElement;
 
-                count = rows.length;
-
-                for (j = 0; j < count; j++) {
-                    row = rows[j];
-                    key = row.keyElement.val();
-                    var valueType = row.valueType;
-                    var valueElement = row.valueElement;
-
-                    if (valueType === "file") {
-                        var domEl = valueElement.get(0);
-                        var len = domEl.files.length;
-                        for (i = 0; i < len; i++) {
-                            finalBodyData.append(key, domEl.files[i]);
+                        if (valueType === "file") {
+                            var domEl = valueElement.get(0);
+                            var len = domEl.files.length;
+                            for (i = 0; i < len; i++) {
+                                finalBodyData.append(key, domEl.files[i]);
+                            }
+                        }
+                        else {
+                            value = valueElement.val();
+                            value = envManager.processString(value, envValues);
+                            finalBodyData.append(key, value);
                         }
                     }
+
+                    if (count > 0) {
+                        return finalBodyData;
+                    }
                     else {
-                        value = valueElement.val();
-                        value = envManager.processString(value, envValues);
-                        finalBodyData.append(key, value);
+                        return undefined;
                     }
                 }
+                else if (that.dataMode === 'urlencoded') {
+                    finalBodyData = "";
+                    rows = $('#urlencoded-keyvaleditor').keyvalueeditor('getElements');
+                    count = rows.length;
+                    for (j = 0; j < count; j++) {
+                        row = rows[j];
+                        value = row.valueElement.val();
+                        value = envManager.processString(value, envValues);
+                        value = encodeURIComponent(value);                    
+                        value = value.replace(/%20/g, '+');
+                        key = encodeURIComponent(row.keyElement.val());
+                        key = key.replace(/%20/g, '+');
 
-                if (count > 0) {
-                    xhr.send(finalBodyData);
-                }
-                else {
-                    xhr.send();
+                        finalBodyData += key + "=" + value + "&";
+                    }
+
+                    finalBodyData = finalBodyData.substr(0, finalBodyData.length - 1);
+
+                    if (count > 0) {
+                        return finalBodyData;
+                    }
+                    else {
+                        return undefined;
+                    }
                 }
             }
-            else if (this.dataMode === 'urlencoded') {
-                finalBodyData = "";
-                rows = $('#urlencoded-keyvaleditor').keyvalueeditor('getElements');
-                xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
-                count = rows.length;
-                for (j = 0; j < count; j++) {
-                    row = rows[j];
-                    value = row.valueElement.val();
-                    value = envManager.processString(value, envValues);
-                    value = encodeURIComponent(value);                    
-                    value = value.replace(/%20/g, '+');
-                    key = encodeURIComponent(row.keyElement.val());
-                    key = key.replace(/%20/g, '+');
-                    
-                    finalBodyData += key + "=" + value + "&";
-                }
-
-                finalBodyData = finalBodyData.substr(0, finalBodyData.length - 1);
-
-                if (count > 0) {
-                    xhr.send(finalBodyData);
-                }
-                else {
-                    xhr.send();
-                }
-            }
-        } else {
-            xhr.send();
+        }
+        
+        var headersMap = generateHeaders();
+        
+        for (var key in headersMap) {
+            xhr.setRequestHeader(key, headersMap[key]);
         }
 
+        var formData = getFinalBodyData();
+        
+        if (curlCommand) {
+
+            return this.extractCurlCommand (method, url, headersMap, formData);
+        } else {
+            
+            if (formData) {
+                xhr.send(formData);
+            } else {
+                xhr.send();
+            }
+        }
+        
         if (pm.settings.get("autoSaveRequest")) {
             pm.history.addRequest(originalUrl, method, pm.request.getPackedHeaders(), originalData, this.dataMode);
         }
