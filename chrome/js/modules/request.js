@@ -1618,10 +1618,10 @@ pm.request = {
     
     extractCurlCommand:function (method, url, headersMap, formData) {
         
-        var curlCommand = "curl -X " + method;
+        var curlCommand = "curl -X " + method + '\n';
 
         for (var headerKey in headersMap) {
-            curlCommand += ' -H "' + headerKey + ":" + headersMap[headerKey]  + '"';
+            curlCommand += ' -H "' + headerKey + ":" + headersMap[headerKey]  + '" \\ \n';
         }
         
         if (formData) {
