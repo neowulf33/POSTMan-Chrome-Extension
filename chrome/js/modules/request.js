@@ -1628,82 +1628,57 @@ pm.request = {
             curlCommand += ' -d "' + formData + '"';
         }
         
-        curlCommand += ' ' + url;
+        curlCommand += ' "' + url + '"';
         return curlCommand;
     },
 
     //Send the current request
     send:function (responseType, curlCommand) {
-        // Set state as if change event of input handlers was called
-        pm.request.setUrlParamString(pm.request.getUrlEditorParams());
-        pm.request.headers = pm.request.getHeaderEditorParams();
-
-        if (pm.helpers.activeHelper == "oauth1" && pm.helpers.oAuth1.isAutoEnabled) {            
-            pm.helpers.oAuth1.generateHelper();
-            pm.helpers.oAuth1.process();
-        }
-
-        $('#headers-keyvaleditor-actions-open .headers-count').html(pm.request.headers.length);
-
-        var i;
-        this.url = $('#url').val();
-        var url = this.url;
-        this.body.data = pm.request.body.getData();
-
-        if (url === "") {
-            return;
-        }
-
-        var xhr = new XMLHttpRequest();
-        pm.request.xhr = xhr;
-
-        var envManager = pm.envManager;
-        var environment = envManager.selectedEnv;
+        
+        var that = this;
+        var method = this.method.toUpperCase();
+        var data = pm.request.body.getRawData();
+        var originalUrl = $('#url').val();
+        var originalData = data;
+        
+        var environment = pm.envManager.selectedEnv;
         var envValues = [];
-
         if (environment !== null) {
             envValues = environment.values;
         }
-
-        url = envManager.processString(url, envValues);
-        url = ensureProperUrl(url);
-
-        pm.request.url = url;
-
-        url = pm.request.encodeUrl(url);
-
-        var that = this;
-        var originalUrl = $('#url').val();
-        var method = this.method.toUpperCase();
-        var data = pm.request.body.getRawData();
-        var originalData = data;
-
-        if (pm.settings.get("usePostmanProxy") == true) {
-            headers = pm.request.prepareHeadersForProxy(headers);
-        }
-
-        pm.request.startTime = new Date().getTime();
-
-        xhr.onreadystatechange = function (event) {
-            pm.request.response.load(event.target);
-        };
-
-        if (!responseType) {
-            responseType = "text";
-        }
-
-        xhr.responseType = responseType;
-        xhr.open(method, url, true);
         
+        if (originalUrl === "") {
+            return;
+        }
+        
+        function generateUrl() {
+            
+            var url = pm.envManager.processString($('#url').val(), envValues);
+            url = ensureProperUrl(url);
+
+            pm.request.url = url;
+
+            url = pm.request.encodeUrl(url);
+            
+            return url;
+        }
+
         function generateHeaders() {
             
             var headersMap = [];
             var headers = that.headers;
             
-            for (i = 0; i < headers.length; i++) {
+            pm.request.headers = pm.request.getHeaderEditorParams();
+            $('#headers-keyvaleditor-actions-open .headers-count').html(pm.request.headers.length);
+            
+            if (pm.settings.get("usePostmanProxy") == true) {
+                headers = pm.request.prepareHeadersForProxy(headers);
+            }
+            
+            for (var i = 0; i < headers.length; i++) {
                 var header = headers[i];
                 if (!_.isEmpty(header.value)) {
-                    headersMap[header.name] = envManager.processString(header.value, envValues);
+                    headersMap[header.name] = pm.envManager.processString(header.value, envValues);
                 }
             }
 
@@ -1721,12 +1696,12 @@ pm.request = {
         function getFinalBodyData () {
             
             var finalBodyData;
-            var rows, count, j;
+            var rows, count, i, j;
             var row, key, value;
             
             if (that.isMethodWithBody(method)) {
                 if (that.dataMode === 'raw') {
-                    return envManager.processString(data, envValues);
+                    return pm.envManager.processString(data, envValues);
                 }
                 else if (that.dataMode === 'params') {
                     finalBodyData = new FormData();
@@ -1750,7 +1725,7 @@ pm.request = {
                         }
                         else {
                             value = valueElement.val();
-                            value = envManager.processString(value, envValues);
+                            value = pm.envManager.processString(value, envValues);
                             finalBodyData.append(key, value);
                         }
                     }
@@ -1769,7 +1744,7 @@ pm.request = {
                     for (j = 0; j < count; j++) {
                         row = rows[j];
                         value = row.valueElement.val();
-                        value = envManager.processString(value, envValues);
+                        value = pm.envManager.processString(value, envValues);
                         value = encodeURIComponent(value);                    
                         value = value.replace(/%20/g, '+');
                         key = encodeURIComponent(row.keyElement.val());
@@ -1790,18 +1765,48 @@ pm.request = {
             }
         }
         
-        var headersMap = generateHeaders();
-        
-        for (var key in headersMap) {
-            xhr.setRequestHeader(key, headersMap[key]);
+        // Set state as if change event of input handlers was called
+        pm.request.setUrlParamString(pm.request.getUrlEditorParams());
+
+        if (pm.helpers.activeHelper == "oauth1" && pm.helpers.oAuth1.isAutoEnabled) {            
+            pm.helpers.oAuth1.generateHelper();
+            pm.helpers.oAuth1.process();
         }
 
+        if (!responseType) {
+            responseType = "text";
+        }
+
+        var url = generateUrl();
+        
+        var headersMap = generateHeaders();
+        
+        this.body.data = pm.request.body.getData();
         var formData = getFinalBodyData();
         
         if (curlCommand) {
 
             return this.extractCurlCommand (method, url, headersMap, formData);
         } else {
+            
+            var xhr = new XMLHttpRequest();
+            pm.request.xhr = xhr;
+            
+            xhr.onreadystatechange = function (event) {
+                pm.request.response.load(event.target);
+            };
+
+            xhr.open(method, url, true);            
+
+            xhr.responseType = responseType;
+            
+            for (var key in headersMap) {
+                xhr.setRequestHeader(key, headersMap[key]);
+            }
+            
+            //more often, the time to get the response back is more interesting than how long the 
+            //  application takes to generate the request, send the request and then get the response.
+            pm.request.startTime = new Date().getTime();
             
             if (formData) {
                 xhr.send(formData);
