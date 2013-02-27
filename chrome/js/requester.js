@@ -76,9 +76,6 @@ pm.indexedDB.modes = {
     readonly:"readonly"
 };
 
-pm.jsonlint = jsonlint_postman;
-jsonlint_postman = null;
-
 pm.fs = {};
 pm.webUrl = "http://getpostman.com";
 pm.bannedHeaders = [
@@ -147,7 +144,6 @@ window.requestFileSystem = window.requestFileSystem || window.webkitRequestFileS
  Bootstrap
  CodeMirror
  Underscore
- JsonLint
 
  Code status
 
@@ -163,6 +159,7 @@ pm.init = function () {
     pm.settings.init();
     pm.layout.init();
     pm.editor.init();
+    pm.jsonlint.init();
     pm.request.init();
     pm.urlCache.refreshAutoComplete();
     pm.helpers.init();
@@ -2789,6 +2786,15 @@ pm.indexedDB = {
         }
     }
 };
+pm.jsonlint = {
+    instance: null,
+    
+    init: function() {
+      pm.jsonlint.instance = jsonlint_postman;
+      jsonlint_postman = null;
+    }
+};
+
 pm.keymap = {
     init:function () {
         var clearHistoryHandler = function () {
@@ -3060,9 +3066,14 @@ pm.layout = {
                 pm.collections.getAllCollections();
             }
         });
-
+        
         $("#submit-request").on("click", function () {
             pm.request.send("text");
+        });
+
+        $("#give-curl-command").on("click", function() {
+            var curlCommand = pm.request.send("text", true);
+            $('#curl-translation').text(curlCommand);
         });
 
         $("#update-request-in-collection").on("click", function () {
@@ -3258,6 +3269,15 @@ pm.layout = {
         });
 
         $("#modal-delete-collection").on("hidden", function () {
+            pm.layout.onModalClose();
+        });
+        
+        $("#modal-curl").on("shown", function () {
+            //$('.environments-actions-add').focus();
+            pm.layout.onModalOpen("#modal-curl");
+        });
+
+        $("#modal-curl").on("hidden", function () {
             pm.layout.onModalClose();
         });
 
@@ -3570,7 +3590,7 @@ pm.request = {
                 else {
                     pm.request.body.codeMirror.setOption("mode", mode);
                 }
-                
+
                 if (mode === "text") {
                   $('#body-editor-mode-selector-format').addClass('disabled');
                 } else {
@@ -3580,9 +3600,8 @@ pm.request = {
                 pm.request.body.autoFormatEditor(mode);
                 pm.request.body.codeMirror.refresh();
             }
-
         },
-        
+
         autoFormatEditor:function (mode) {
           var content = pm.request.body.codeMirror.getValue(),
               validated = null, result = null;
@@ -3597,7 +3616,7 @@ pm.request = {
               
               // Validate code first.
               try {
-                validated = pm.jsonlint.parse(content);
+                validated = pm.jsonlint.instance.parse(content);
                 if (validated) {
                   content = JSON.parse(pm.request.body.codeMirror.getValue());
                   pm.request.body.codeMirror.setValue(JSON.stringify(content, null, 4));
@@ -3665,11 +3684,12 @@ pm.request = {
             
             // 'Format code' button listener.
             $('#body-editor-mode-selector-format').on('click.postman', function(evt) {
-              
+              var editorMode = $(event.target).attr("data-editor-mode");
+
               if ($(evt.currentTarget).hasClass('disabled')) {
                 return;
               }
-              
+
               pm.request.body.autoFormatEditor(pm.request.body.codeMirror.getMode().name);
             });
         },
@@ -5098,155 +5118,206 @@ pm.request = {
 
         return headers;
     },
+    
+    extractCurlCommand:function (method, url, headersMap, formData) {
+        
+        var curlCommand = "curl -X " + method + '\n';
+
+        for (var headerKey in headersMap) {
+            curlCommand += ' -H "' + headerKey + ":" + headersMap[headerKey]  + '" \\ \n';
+        }
+        
+        if (formData) {
+            curlCommand += ' -d "' + formData + '"';
+        }
+        
+        curlCommand += ' "' + url + '"';
+        return curlCommand;
+    },
 
     //Send the current request
-    send:function (responseType) {
+    send:function (responseType, curlCommand) {
+        
+        var that = this;
+        var method = this.method.toUpperCase();
+        var data = pm.request.body.getRawData();
+        var originalUrl = $('#url').val();
+        var originalData = data;
+        
+        var environment = pm.envManager.selectedEnv;
+        var envValues = [];
+        if (environment !== null) {
+            envValues = environment.values;
+        }
+        
+        if (originalUrl === "") {
+            return;
+        }
+        
+        function generateUrl() {
+            
+            var url = pm.envManager.processString($('#url').val(), envValues);
+            url = ensureProperUrl(url);
+
+            pm.request.url = url;
+
+            url = pm.request.encodeUrl(url);
+            
+            return url;
+        }
+
+        function generateHeaders() {
+            
+            var headersMap = [];
+            var headers = that.headers;
+            
+            pm.request.headers = pm.request.getHeaderEditorParams();
+            $('#headers-keyvaleditor-actions-open .headers-count').html(pm.request.headers.length);
+            
+            if (pm.settings.get("usePostmanProxy") == true) {
+                headers = pm.request.prepareHeadersForProxy(headers);
+            }
+            
+            for (var i = 0; i < headers.length; i++) {
+                var header = headers[i];
+                if (!_.isEmpty(header.value)) {
+                    headersMap[header.name] = pm.envManager.processString(header.value, envValues);
+                }
+            }
+
+            if(pm.settings.get("sendNoCacheHeader") === true) {
+                headersMap["Cache-Control"] = "no-cache";
+            }
+
+            if (that.dataMode === 'urlencoded') {
+                headersMap["Content-Type"] = "application/x-www-form-urlencoded";
+            }
+            
+            return headersMap;
+        }
+
+        function getFinalBodyData () {
+            
+            var finalBodyData;
+            var rows, count, i, j;
+            var row, key, value;
+            
+            if (that.isMethodWithBody(method)) {
+                if (that.dataMode === 'raw') {
+                    return pm.envManager.processString(data, envValues);
+                }
+                else if (that.dataMode === 'params') {
+                    finalBodyData = new FormData();
+
+                    rows = $('#formdata-keyvaleditor').keyvalueeditor('getElements');
+
+                    count = rows.length;
+
+                    for (j = 0; j < count; j++) {
+                        row = rows[j];
+                        key = row.keyElement.val();
+                        var valueType = row.valueType;
+                        var valueElement = row.valueElement;
+
+                        if (valueType === "file") {
+                            var domEl = valueElement.get(0);
+                            var len = domEl.files.length;
+                            for (i = 0; i < len; i++) {
+                                finalBodyData.append(key, domEl.files[i]);
+                            }
+                        }
+                        else {
+                            value = valueElement.val();
+                            value = pm.envManager.processString(value, envValues);
+                            finalBodyData.append(key, value);
+                        }
+                    }
+
+                    if (count > 0) {
+                        return finalBodyData;
+                    }
+                    else {
+                        return undefined;
+                    }
+                }
+                else if (that.dataMode === 'urlencoded') {
+                    finalBodyData = "";
+                    rows = $('#urlencoded-keyvaleditor').keyvalueeditor('getElements');
+                    count = rows.length;
+                    for (j = 0; j < count; j++) {
+                        row = rows[j];
+                        value = row.valueElement.val();
+                        value = pm.envManager.processString(value, envValues);
+                        value = encodeURIComponent(value);                    
+                        value = value.replace(/%20/g, '+');
+                        key = encodeURIComponent(row.keyElement.val());
+                        key = key.replace(/%20/g, '+');
+
+                        finalBodyData += key + "=" + value + "&";
+                    }
+
+                    finalBodyData = finalBodyData.substr(0, finalBodyData.length - 1);
+
+                    if (count > 0) {
+                        return finalBodyData;
+                    }
+                    else {
+                        return undefined;
+                    }
+                }
+            }
+        }
+        
         // Set state as if change event of input handlers was called
         pm.request.setUrlParamString(pm.request.getUrlEditorParams());
-        pm.request.headers = pm.request.getHeaderEditorParams();
 
         if (pm.helpers.activeHelper == "oauth1" && pm.helpers.oAuth1.isAutoEnabled) {            
             pm.helpers.oAuth1.generateHelper();
             pm.helpers.oAuth1.process();
         }
 
-        $('#headers-keyvaleditor-actions-open .headers-count').html(pm.request.headers.length);
-
-        var i;
-        this.url = $('#url').val();
-        var url = this.url;
-        this.body.data = pm.request.body.getData();
-
-        if (url === "") {
-            return;
-        }
-
-        var xhr = new XMLHttpRequest();
-        pm.request.xhr = xhr;
-
-        var envManager = pm.envManager;
-        var environment = envManager.selectedEnv;
-        var envValues = [];
-
-        if (environment !== null) {
-            envValues = environment.values;
-        }
-
-        url = envManager.processString(url, envValues);
-        url = ensureProperUrl(url);
-
-        pm.request.url = url;
-
-        url = pm.request.encodeUrl(url);
-
-        var originalUrl = $('#url').val();
-        var method = this.method.toUpperCase();
-        var data = pm.request.body.getRawData();
-        var originalData = data;
-        var finalBodyData;
-        var headers = this.headers;
-
-        if (pm.settings.get("usePostmanProxy") == true) {
-            headers = pm.request.prepareHeadersForProxy(headers);
-        }
-
-        pm.request.startTime = new Date().getTime();
-
-        xhr.onreadystatechange = function (event) {
-            pm.request.response.load(event.target);
-        };
-
         if (!responseType) {
             responseType = "text";
         }
 
-        xhr.responseType = responseType;
-        xhr.open(method, url, true);
+        var url = generateUrl();
+        
+        var headersMap = generateHeaders();
+        
+        this.body.data = pm.request.body.getData();
+        var formData = getFinalBodyData();
+        
+        if (curlCommand) {
 
-        for (i = 0; i < headers.length; i++) {
-            var header = headers[i];
-            if (!_.isEmpty(header.value)) {
-                xhr.setRequestHeader(header.name, envManager.processString(header.value, envValues));
-            }
-        }
-
-        if(pm.settings.get("sendNoCacheHeader") === true) {
-            xhr.setRequestHeader("Cache-Control", "no-cache");                
-        }
-
-        var rows, count, j;
-        var row, key, value;
-
-        if (this.isMethodWithBody(method)) {
-            if (this.dataMode === 'raw') {
-                data = envManager.processString(data, envValues);
-                finalBodyData = data;
-                xhr.send(finalBodyData);
-            }
-            else if (this.dataMode === 'params') {
-                finalBodyData = new FormData();
-
-                rows = $('#formdata-keyvaleditor').keyvalueeditor('getElements');
-
-                count = rows.length;
-
-                for (j = 0; j < count; j++) {
-                    row = rows[j];
-                    key = row.keyElement.val();
-                    var valueType = row.valueType;
-                    var valueElement = row.valueElement;
-
-                    if (valueType === "file") {
-                        var domEl = valueElement.get(0);
-                        var len = domEl.files.length;
-                        for (i = 0; i < len; i++) {
-                            finalBodyData.append(key, domEl.files[i]);
-                        }
-                    }
-                    else {
-                        value = valueElement.val();
-                        value = envManager.processString(value, envValues);
-                        finalBodyData.append(key, value);
-                    }
-                }
-
-                if (count > 0) {
-                    xhr.send(finalBodyData);
-                }
-                else {
-                    xhr.send();
-                }
-            }
-            else if (this.dataMode === 'urlencoded') {
-                finalBodyData = "";
-                rows = $('#urlencoded-keyvaleditor').keyvalueeditor('getElements');
-                xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
-                count = rows.length;
-                for (j = 0; j < count; j++) {
-                    row = rows[j];
-                    value = row.valueElement.val();
-                    value = envManager.processString(value, envValues);
-                    value = encodeURIComponent(value);                    
-                    value = value.replace(/%20/g, '+');
-                    key = encodeURIComponent(row.keyElement.val());
-                    key = key.replace(/%20/g, '+');
-                    
-                    finalBodyData += key + "=" + value + "&";
-                }
-
-                finalBodyData = finalBodyData.substr(0, finalBodyData.length - 1);
-
-                if (count > 0) {
-                    xhr.send(finalBodyData);
-                }
-                else {
-                    xhr.send();
-                }
-            }
+            return this.extractCurlCommand (method, url, headersMap, formData);
         } else {
-            xhr.send();
-        }
+            
+            var xhr = new XMLHttpRequest();
+            pm.request.xhr = xhr;
+            
+            xhr.onreadystatechange = function (event) {
+                pm.request.response.load(event.target);
+            };
 
+            xhr.open(method, url, true);            
+
+            xhr.responseType = responseType;
+            
+            for (var key in headersMap) {
+                xhr.setRequestHeader(key, headersMap[key]);
+            }
+            
+            //more often, the time to get the response back is more interesting than how long the 
+            //  application takes to generate the request, send the request and then get the response.
+            pm.request.startTime = new Date().getTime();
+            
+            if (formData) {
+                xhr.send(formData);
+            } else {
+                xhr.send();
+            }
+        }
+        
         if (pm.settings.get("autoSaveRequest")) {
             pm.history.addRequest(originalUrl, method, pm.request.getPackedHeaders(), originalData, this.dataMode);
         }
