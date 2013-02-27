@@ -1618,17 +1618,17 @@ pm.request = {
     
     extractCurlCommand:function (method, url, headersMap, formData) {
         
-        var curlCommand = "curl -X " + method + '\n';
+        var curlCommand = "curl -X " + method + ' \\\n';
 
         for (var headerKey in headersMap) {
-            curlCommand += ' -H "' + headerKey + ":" + headersMap[headerKey]  + '" \\ \n';
+            curlCommand += ' -H "' + headerKey + ":" + headersMap[headerKey]  + '" \\\n';
         }
         
         if (formData) {
             curlCommand += ' -d "' + formData + '"';
         }
         
-        curlCommand += ' "' + url + '"';
+        curlCommand += ' "' + url + '"; echo';
         return curlCommand;
     },
 
